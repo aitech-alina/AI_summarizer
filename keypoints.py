@@ -1,18 +1,67 @@
+import importlib
 import re
-from collections import Counter
 
-STOP_WORDS = {
-    "a", "an", "the", "and", "or", "but", "if", "then", "else", "when", "while",
-    "for", "to", "of", "in", "on", "at", "by", "with", "from", "as", "is", "are",
-    "was", "were", "be", "been", "being", "it", "this", "that", "these", "those",
-    "you", "we", "they", "he", "she", "i", "me", "my", "our", "your", "their",
-    "can", "could", "should", "would", "may", "might", "will", "just", "not", "do",
-    "does", "did", "done", "have", "has", "had", "also", "about", "into", "over",
-    "under", "after", "before", "between", "through", "during", "without", "within",
+spacy = None
+_nlp = None
+STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "they", "their",
+    "have", "has", "are", "was", "were", "what", "when", "where",
+    "which", "while", "there", "about", "between", "under", "over",
+    "through", "because", "before", "after", "about", "also", "using",
+    "use", "used", "can", "will", "would", "could",
 }
 
+
+def _load_spacy():
+    global spacy
+    if spacy is not None:
+        return spacy
+
+    try:
+        spacy = importlib.import_module("spacy")
+    except Exception as e:
+        print(f"spaCy import failed: {e}")
+        spacy = None
+    return spacy
+
+
+def _get_nlp():
+    global _nlp
+    if _nlp is not None:
+        return _nlp
+
+    spacy_module = _load_spacy()
+    if spacy_module is None:
+        return None
+
+    try:
+        print("Loading spaCy model...")
+        _nlp = spacy_module.load("en_core_web_sm")
+        print("spaCy model loaded successfully")
+    except Exception as e:
+        print(f"Failed to load spaCy model: {e}")
+        _nlp = None
+
+    return _nlp
+
+
+def _naive_keypoints(text, max_keywords=20):
+    words = re.findall(r"\b[a-zA-Z]{4,}\b", text.lower())
+    freq = {}
+    for word in words:
+        if word in STOPWORDS:
+            continue
+        freq[word] = freq.get(word, 0) + 1
+    return sorted(freq, key=freq.get, reverse=True)[:max_keywords]
+
+
 def extract_keypoints(text):
-    words = re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", text.lower())
-    filtered_words = [word for word in words if len(word) > 2 and word not in STOP_WORDS]
-    most_common = Counter(filtered_words).most_common(20)
-    return [word for word, _ in most_common]
+    nlp_instance = _get_nlp()
+    if nlp_instance is not None:
+        try:
+            doc = nlp_instance(text)
+            keywords = list({token.text for token in doc if token.pos_ in ["NOUN", "PROPN"]})
+            return keywords[:20]
+        except Exception as e:
+            print(f"spaCy extraction failed: {e}")
+    return _naive_keypoints(text)

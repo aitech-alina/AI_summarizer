@@ -1,88 +1,97 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import os
-import shutil
-
 from speech import speech_to_text
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+import shutil
+import os
+
 from summarizer import summarize_text
 from keypoints import extract_keypoints
 from ocr import image_to_text
-from diagram import diagram_to_steps
+
+from docx import Document
+from PyPDF2 import PdfReader
 
 app = FastAPI()
 
+# Allow frontend requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 UPLOAD_FOLDER = "uploads"
-
-# Create uploads folder if not exists
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
 @app.get("/")
 def home():
-    return {"message": "AI Lecture Summarizer API Running 🚀"}
+    return {"message": "Backend is running"}
+
+
+@app.get("/favicon.ico")
+def favicon():
+    from fastapi.responses import Response
+    return Response(status_code=204)
 
 
 @app.post("/process")
-async def process(file: UploadFile = File(...)):
-    try:
-        # Save file
-        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+async def process_file(file: UploadFile = File(...)):
+    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
 
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    # Save file
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-        # Detect file type
-        filename = file.filename.lower()
+    text = ""
+    filename = file.filename.lower()
 
-        # 🔹 AUDIO FILES
-        if filename.endswith((".mp3", ".wav", ".m4a")):
-            text = speech_to_text(file_path)
-            input_type = "audio"
+    # 🖼️ IMAGE → OCR
+    if filename.endswith((".png", ".jpg", ".jpeg")):
+        text = image_to_text(file_path)
 
-        # 🔹 IMAGE FILES (Handwritten / Diagram)
-        elif filename.endswith((".png", ".jpg", ".jpeg")):
-            text = image_to_text(file_path)
-            input_type = "image"
+    # 🎤 AUDIO → Whisper
+    elif filename.endswith((".mp3", ".wav", ".m4a")):
+        text = speech_to_text(file_path)
 
-        # 🔹 TEXT FILES
-        elif filename.endswith(".txt"):
-            with open(file_path, "r", encoding="utf-8") as f:
-                text = f.read()
-            input_type = "text"
+    # 📘 PDF
+    elif filename.endswith(".pdf"):
+        try:
+            reader = PdfReader(file_path)
+            for page in reader.pages:
+                text += page.extract_text() or ""
+        except Exception as e:
+            print("PDF Error:", e)
+            return {"error": "PDF processing failed ❌"}
 
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
+    # 📝 WORD (.docx)
+    elif filename.endswith(".docx"):
+        try:
+            doc = Document(file_path)
+            text = "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            print("DOCX Error:", e)
+            return {"error": "Word file processing failed ❌"}
 
-        # 🔹 SUMMARIZATION
-        summary = summarize_text(text)
+    # 📄 TEXT
+    elif filename.endswith(".txt"):
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
 
-        # 🔹 KEY POINTS
-        keypoints = extract_keypoints(text)
+    else:
+        return {"error": "Unsupported file format ❌"}
 
-        # 🔹 BULLET POINTS (simple conversion)
-        bullet_points = summary.split(". ")
-        bullet_points = [point.strip() for point in bullet_points if point]
+    # ⚠️ Safety check (VERY IMPORTANT)
+    if not text or len(text.strip()) < 20:
+        return {"error": "Could not extract meaningful text ❌"}
 
-        # 🔹 DIAGRAM STEPS (only meaningful for image/text)
-        diagram_steps = diagram_to_steps(text)
+    # 🧠 AI Processing
+    summary = summarize_text(text)
+    keypoints = extract_keypoints(text)
 
-        return {
-            "input_type": input_type,
-            "extracted_text": text,
-            "summary": summary,
-            "keypoints": keypoints,
-            "bullet_points": bullet_points,
-            "diagram_steps": diagram_steps
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "summary": summary,
+        "keypoints": keypoints
+    }
